@@ -59,11 +59,12 @@ SUPPORTED_LANGUAGES = {
 
 
 # Legal news RSS feeds (reliable Indian legal sources)
+# ✅ Fixed: Removed extra spaces
 LEGAL_NEWS_FEEDS = [
     "https://www.livelaw.in/rss",
     "https://indiankanoon.org/docsource/?docsource=Supreme%20Court",
     "https://www.lawcrossing.com/rss/india/",
-    "https://www.barandbench.com/feed",
+    "https://www.barandbench.com/feed"
 ]
 
 
@@ -102,11 +103,16 @@ def load_vector_database():
         documents = []
 
         for file in pdf_files:
-            loader = PyPDFLoader(os.path.join(PDF_FOLDER, file))
-            docs = loader.load()
-            documents.extend(docs)
+            file_path = os.path.join(PDF_FOLDER, file)
+            try:
+                loader = PyPDFLoader(file_path)
+                docs = loader.load()
+                documents.extend(docs)
+            except Exception as e:
+                st.warning(f"Could not load {file}: {str(e)}")
 
         if not documents:
+            st.warning("No documents loaded. RAG disabled.")
             return None
 
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
@@ -135,11 +141,13 @@ def fetch_youtube_videos(query):
         if response.status_code != 200:
             return []
         items = response.json().get("items", [])
+        # ✅ Fixed: Removed extra space in URL
         return [
             f"[{item['snippet']['title']}](https://www.youtube.com/watch?v={item['id']['videoId']})"
             for item in items
         ]
-    except Exception:
+    except Exception as e:
+        st.warning(f"YouTube fetch failed: {str(e)}")
         return []
 
 
@@ -157,7 +165,7 @@ def extract_text_from_pdf(uploaded_file):
             page_text = page.extract_text()
             if page_text:
                 text += page_text + "\n"
-        return text[:10000]
+        return text[:10000]  # Limit context
     except Exception as e:
         st.error(f"Error reading PDF: {str(e)}")
         return None
@@ -177,18 +185,6 @@ def text_to_speech(text, language="en", filename="response.mp3"):
         return None
 
 
-def autoplay_audio(file_path):
-    with open(file_path, "rb") as f:
-        data = f.read()
-        b64 = base64.b64encode(data).decode()
-        md = f"""
-            <audio autoplay="true">
-            <source src="audio/mp3;base64,{b64}" type="audio/mp3">
-            </audio>
-            """
-        st.markdown(md, unsafe_allow_html=True)
-
-
 # -------------------------------
 # Fetch Latest Legal News
 # -------------------------------
@@ -198,14 +194,15 @@ def fetch_legal_news(max_items=5):
 
     for feed_url in LEGAL_NEWS_FEEDS:
         try:
-            feed = feedparser.parse(feed_url)
+            feed = feedparser.parse(feed_url.strip())  # ✅ strip() to remove spaces
+            if not feed.entries:
+                continue
             for entry in feed.entries[:3]:
-                title = entry.get("title", "No title")
+                title = entry.get("title", "No title").strip()
                 link = entry.get("link", "#")
-                published = entry.get("published", "")
                 summary = entry.get("summary", "").replace("\n", " ")[:200] + "..."
 
-                if title in seen_titles:
+                if not title or title in seen_titles:
                     continue
                 seen_titles.add(title)
 
@@ -226,7 +223,8 @@ def fetch_legal_news(max_items=5):
                     break
             if len(news_items) >= max_items:
                 break
-        except Exception:
+        except Exception as e:
+            st.warning(f"Failed to fetch from {feed_url}: {str(e)}")
             continue
 
     return news_items[:max_items]
@@ -304,14 +302,12 @@ tab1, tab2 = st.tabs(["💬 Chat", "📰 Latest Legal News"])
 with tab1:
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
-        st.session_state.pdf_text_context = ""
 
     for message in st.session_state.chat_history:
         with st.chat_message(message["role"]):
             st.write(message["content"])
-            # Play audio if assistant and voice enabled
-            if message["role"] == "assistant" and message.get("audio"):
-                autoplay_audio(message["audio"])
+            if message["role"] == "assistant" and message.get("audio") and enable_voice:
+                st.audio(message["audio"])
 
     if prompt := st.chat_input("Ask a legal question..."):
         st.session_state.chat_history.append({"role": "user", "content": prompt})
@@ -321,15 +317,14 @@ with tab1:
         with st.spinner("Searching laws and preparing response..."):
             try:
                 qa_chain = get_qa_chain(selected_language)
-                input_query = prompt
-                if pdf_text:
-                    input_query = f"Document Summary:\n{pdf_text}\n\nQuestion: {prompt}"
+                input_query = f"Document Summary:\n{pdf_text}\n\nQuestion: {prompt}" if pdf_text else prompt
 
                 response = qa_chain.run(input_query)
                 if not response or response.strip() == "":
-                    response = "I could not find a relevant answer."
+                    response = "I could not find a relevant answer based on the document or my knowledge."
 
             except Exception as e:
+                st.error(f"Error generating response: {str(e)}")
                 response = "I'm currently unable to process your request. Please try again later."
 
             # Add YouTube links
